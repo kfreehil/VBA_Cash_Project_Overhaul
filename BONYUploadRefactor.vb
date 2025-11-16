@@ -217,120 +217,107 @@ Private Sub MigrateHistoricalData()
     Dim db As DAO.Database
     Set db = CurrentDb
     
-    ' Get total count
+    ' Count rows needing migration
     Dim rsCount As DAO.Recordset
-    Set rsCount = db.OpenRecordset("SELECT COUNT(*) AS Total FROM BonyStatement")
+    Set rsCount = db.OpenRecordset( _
+        "SELECT COUNT(*) AS Total FROM BonyStatement " & _
+        "WHERE AllDetails IS NULL OR AllDetails = ''")
+    
     Dim totalRows As Long
     totalRows = rsCount!Total
     rsCount.Close
     
-    Debug.Print "Total rows to migrate: " & Format(totalRows, "#,##0")
-    Debug.Print ""
+    If totalRows = 0 Then
+        Debug.Print "✓ No migration needed - AllDetails already populated"
+        Debug.Print ""
+        Exit Sub
+    End If
     
-    Dim processed As Long
-    processed = 0
+    Debug.Print "Rows to migrate: " & Format(totalRows, "#,##0")
+    Debug.Print ""
+    Debug.Print "Executing SQL UPDATE (this will take 30-90 seconds)..."
+    Debug.Print "⚠️ DO NOT INTERRUPT!"
+    Debug.Print ""
     
     Dim startTime As Double
     startTime = Timer
     
-    ' Process in batches
-    Dim batchSize As Long
-    batchSize = 10000
+    ' Build SQL UPDATE statement
+    Dim sql As String
+    sql = "UPDATE BonyStatement " & _
+          "SET AllDetails = Trim(" & _
+          "    Nz(Details1, '') " & _
+          "    & IIf(Nz(Details2,'') <> '', ' | ' & Details2, '') " & _
+          "    & IIf(Nz(Details3,'') <> '', ' | ' & Details3, '') " & _
+          "    & IIf(Nz(Details4,'') <> '', ' | ' & Details4, '') " & _
+          "    & IIf(Nz(Details5,'') <> '', ' | ' & Details5, '') " & _
+          "    & IIf(Nz(Details6,'') <> '', ' | ' & Details6, '') " & _
+          "    & IIf(Nz(Details7,'') <> '', ' | ' & Details7, '') " & _
+          "    & IIf(Nz(Details8,'') <> '', ' | ' & Details8, '') " & _
+          "    & IIf(Nz(Details9,'') <> '', ' | ' & Details9, '') " & _
+          "    & IIf(Nz(Details10,'') <> '', ' | ' & Details10, '') " & _
+          ") " & _
+          "WHERE AllDetails IS NULL OR AllDetails = ''"
     
-    Do While processed < totalRows
-        Dim sql As String
-        sql = "SELECT TransactionID, Details1, Details2, Details3, Details4, Details5, " & _
-              "Details6, Details7, Details8, Details9, Details10, AllDetails " & _
-              "FROM BonyStatement " & _
-              "WHERE AllDetails IS NULL OR AllDetails = '' " & _
-              "ORDER BY TransactionID"
-        
-        Dim rs As DAO.Recordset
-        Set rs = db.OpenRecordset(sql, dbOpenDynaset)
-        
-        If rs.EOF Then Exit Do
-        
-        Dim batchCount As Long
-        batchCount = 0
-        
-        Do While Not rs.EOF And batchCount < batchSize
-            Dim allDetails As String
-            allDetails = ConcatenateDetails( _
-                Nz(rs!Details1, ""), _
-                Nz(rs!Details2, ""), _
-                Nz(rs!Details3, ""), _
-                Nz(rs!Details4, ""), _
-                Nz(rs!Details5, ""), _
-                Nz(rs!Details6, ""), _
-                Nz(rs!Details7, ""), _
-                Nz(rs!Details8, ""), _
-                Nz(rs!Details9, ""), _
-                Nz(rs!Details10, "") _
-            )
-            
-            rs.Edit
-            rs!AllDetails = allDetails
-            rs.Update
-            
-            batchCount = batchCount + 1
-            processed = processed + 1
-            
-            If processed Mod 1000 = 0 Then
-                Dim elapsed As Double
-                elapsed = Timer - startTime
-                
-                Dim pct As Double
-                pct = processed / totalRows
-                
-                Dim remaining As Double
-                If pct > 0 Then
-                    remaining = (elapsed / pct) - elapsed
-                End If
-                
-                Debug.Print "  Processed: " & Format(processed, "#,##0") & " / " & _
-                           Format(totalRows, "#,##0") & " (" & Format(pct, "0%") & ")" & _
-                           " - Est. remaining: " & Format(remaining / 60, "0.0") & " min"
-            End If
-            
-            rs.MoveNext
-        Loop
-        
-        rs.Close
-        Set rs = Nothing
-        
-        DoEvents
-    Loop
+    On Error GoTo ErrorHandler
+    
+    ' Execute single UPDATE (Access handles all rows internally)
+    db.Execute sql, dbFailOnError
     
     Dim totalTime As Double
     totalTime = Timer - startTime
     
-    Debug.Print ""
+    ' Report results
     Debug.Print "✓ Migration complete!"
-    Debug.Print "  Rows migrated: " & Format(processed, "#,##0")
-    Debug.Print "  Time taken: " & Format(totalTime / 60, "0.0") & " minutes"
+    Debug.Print ""
+    Debug.Print "Results:"
+    Debug.Print "  Rows updated: " & Format(db.RecordsAffected, "#,##0")
+    Debug.Print "  Time taken: " & Format(totalTime, "0.0") & " seconds"
+    Debug.Print "  Speed: " & Format(totalRows / totalTime, "#,##0") & " rows/second"
+    Debug.Print ""
+    
+    ' Verify migration
+    Set rsCount = db.OpenRecordset( _
+        "SELECT COUNT(*) AS Total FROM BonyStatement " & _
+        "WHERE AllDetails IS NOT NULL AND AllDetails <> ''")
+    
+    Debug.Print "Verification:"
+    Debug.Print "  Total rows with AllDetails: " & Format(rsCount!Total, "#,##0")
+    rsCount.Close
+    
+    Set rsCount = db.OpenRecordset( _
+        "SELECT COUNT(*) AS Total FROM BonyStatement " & _
+        "WHERE AllDetails IS NULL OR AllDetails = ''")
+    
+    Debug.Print "  Rows still missing AllDetails: " & Format(rsCount!Total, "#,##0")
+    rsCount.Close
     
     Set db = Nothing
+    
+    Debug.Print ""
+    Debug.Print "═══════════════════════════════════════════"
+    
+    Exit Sub
+    
+ErrorHandler:
+    Debug.Print ""
+    Debug.Print "✗ Migration failed!"
+    Debug.Print "  Error: " & Err.Description
+    Debug.Print "  Error number: " & Err.Number
+    Debug.Print ""
+    Debug.Print "  This might happen if:"
+    Debug.Print "    - Database is open by another user"
+    Debug.Print "    - Insufficient memory"
+    Debug.Print "    - Disk full"
+    Debug.Print ""
+    
+    If Err.Number = -2147217900 Then
+        Debug.Print "  Specific issue: Query too complex"
+        Debug.Print "  Try the simpler version (space separator instead of ' | ')"
+    End If
+    
+    Err.Raise Err.Number
 End Sub
-
-Private Function ConcatenateDetails(ParamArray details() As Variant) As String
-    Dim result As String
-    result = ""
-    
-    Dim i As Integer
-    For i = LBound(details) To UBound(details)
-        Dim detail As String
-        detail = Trim(CStr(details(i)))
-        
-        If detail <> "" Then
-            If result <> "" Then
-                result = result & " | "
-            End If
-            result = result & detail
-        End If
-    Next i
-    
-    ConcatenateDetails = result
-End Function
 
 '**********************
 '*** VERIFICATION ***
