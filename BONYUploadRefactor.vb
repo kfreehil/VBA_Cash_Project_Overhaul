@@ -253,73 +253,6 @@ ErrorHandler:
     Err.Raise Err.Number
 End Sub
 
-'**********************
-'*** VERIFICATION ***
-'**********************
-Public Sub VerifySetup()
-    Debug.Print "═══ SETUP VERIFICATION ═══"
-    Debug.Print ""
-    
-    Dim db As DAO.Database
-    Set db = CurrentDb
-    
-    Dim tbl As DAO.TableDef
-    Set tbl = db.TableDefs("BonyStatement")
-    
-    ' Check fields
-    Debug.Print "Fields:"
-    Dim hasAllDetails As Boolean
-    hasAllDetails = False
-    
-    Dim fld As DAO.Field
-    For Each fld In tbl.Fields
-        If fld.Name = "AllDetails" Then
-            hasAllDetails = True
-            Debug.Print "  ✓ AllDetails exists (" & GetFieldTypeName(fld.Type) & ")"
-        End If
-    Next
-    
-    If Not hasAllDetails Then Debug.Print "  ✗ AllDetails MISSING!"
-    
-    Debug.Print ""
-    Debug.Print "Indexes:"
-    
-    Dim idx As DAO.Index
-    For Each idx In tbl.Indexes
-        Debug.Print "  " & idx.Name & ":"
-        For Each fld In idx.Fields
-            Debug.Print "    - " & fld.Name
-        Next
-    Next
-    
-    Debug.Print ""
-    Debug.Print "Data check:"
-    Dim rsCheck As DAO.Recordset
-    Set rsCheck = db.OpenRecordset( _
-        "SELECT COUNT(*) AS Total FROM BonyStatement WHERE AllDetails IS NOT NULL AND AllDetails <> ''")
-    Debug.Print "  Rows with AllDetails populated: " & Format(rsCheck!Total, "#,##0")
-    rsCheck.Close
-    
-    Set rsCheck = db.OpenRecordset("SELECT COUNT(*) AS Total FROM BonyStatement")
-    Debug.Print "  Total rows: " & Format(rsCheck!Total, "#,##0")
-    rsCheck.Close
-    
-    Set db = Nothing
-End Sub
-
-Private Function GetFieldTypeName(fieldType As DAO.DataTypeEnum) As String
-    Select Case fieldType
-        Case dbLong: GetFieldTypeName = "Long Integer"
-        Case dbText: GetFieldTypeName = "Text"
-        Case dbMemo: GetFieldTypeName = "Memo"
-        Case dbDate: GetFieldTypeName = "Date/Time"
-        Case dbDouble: GetFieldTypeName = "Double"
-        Case dbCurrency: GetFieldTypeName = "Currency"
-        Case dbBoolean: GetFieldTypeName = "Yes/No"
-        Case dbAutoIncField: GetFieldTypeName = "AutoNumber"
-        Case Else: GetFieldTypeName = "Other (" & fieldType & ")"
-    End Select
-End Function
 
 '**********************
 '*** COMPACT & REPAIR ***
@@ -396,26 +329,35 @@ Private pValueDate As Date
 Public Function UploadDataFromImportFolder(ByVal Fle As Scripting.File, _
                                           ByRef MetaData As TFileMetaData, _
                                           Optional ByVal Log As Scripting.TextStream) As Boolean
-    
+
     Dim db As DAO.Database
     Set db = CurrentDb
     
     pValueDate = MetaData.ValueDate
     
-    DebugPrint "Parsing BONY Statement for " & Format(pValueDate, "DD-MMM-YYYY") & "...", Log
-    
-    ' ═══════════════════════════════════════════════════════
-    ' STEP 1: Parse file into memory array (FAST!)
-    ' ═══════════════════════════════════════════════════════
-    Dim arrData() As Variant
-    Dim rowCount As Long
-    rowCount = 0
-    
-    ReDim arrData(1 To 5000, 1 To 6) ' Pre-allocate for ~5000 rows
+    DebugPrint "Uploading BONY Statement for " & Format(pValueDate, "DD-MMM-YYYY") & "...", Log
     
     Dim parseStart As Double
     parseStart = Timer
     
+    ' Delete old data for this ValueDate
+    db.Execute "DELETE FROM BonyStatement " & _
+               "WHERE ValueDate = #" & Format(pValueDate, "MM/DD/YYYY") & "#", _
+               dbFailOnError
+    
+    ' Start transaction (CRITICAL for performance!)
+    db.BeginTrans
+    
+    On Error GoTo ErrorHandler
+    
+    ' Open recordset for bulk append
+    Dim rs As DAO.Recordset
+    Set rs = db.OpenRecordset("BonyStatement", dbOpenTable, dbAppendOnly)
+    
+    Dim rowCount As Long
+    rowCount = 0
+    
+    ' Parse and insert directly (NO ARRAY!)
     With Fle.OpenAsTextStream(ForReading)
         Dim LineItem As String
         If Not .AtEndOfStream Then LineItem = Trim(.ReadLine)
@@ -436,86 +378,43 @@ Public Function UploadDataFromImportFolder(ByVal Fle As Scripting.File, _
                 
                 Parser.ParseDetails
                 
-                ' Store in array (memory operation - very fast!)
+                ' Insert directly to recordset (NO array step!)
                 rowCount = rowCount + 1
-                
-                ' Resize array if needed
-                If rowCount > UBound(arrData, 1) Then
-                    ReDim Preserve arrData(1 To UBound(arrData, 1) + 1000, 1 To 6)
-                End If
-                
-                arrData(rowCount, 1) = rowCount ' CashMovementID
-                arrData(rowCount, 2) = pValueDate ' ValueDate
-                arrData(rowCount, 3) = Parser.ParseFedWireRef ' FedwireRef
-                arrData(rowCount, 4) = Parser.ParseCRNRef ' CRNRef
-                arrData(rowCount, 5) = Parser.ParseAmount ' amount
-                arrData(rowCount, 6) = Parser.ParseAllDetailsAsString() ' AllDetails
+                rs.AddNew
+                rs!CashMovementID = rowCount
+                rs!ValueDate = pValueDate
+                rs!FedwireRef = Parser.ParseFedWireRef
+                rs!CRNRef = Parser.ParseCRNRef
+                rs!amount = Parser.ParseAmount
+                rs!AllDetails = Parser.ParseAllDetailsAsString()
+                rs.Update
             Else
                 ' Non-cash item
                 rowCount = rowCount + 1
-                
-                If rowCount > UBound(arrData, 1) Then
-                    ReDim Preserve arrData(1 To UBound(arrData, 1) + 1000, 1 To 6)
-                End If
-                
-                arrData(rowCount, 1) = rowCount
-                arrData(rowCount, 2) = pValueDate
-                arrData(rowCount, 3) = ""
-                arrData(rowCount, 4) = ""
-                arrData(rowCount, 5) = 0
-                arrData(rowCount, 6) = Trim(LineItem)
+                rs.AddNew
+                rs!CashMovementID = rowCount
+                rs!ValueDate = pValueDate
+                rs!FedwireRef = ""
+                rs!CRNRef = ""
+                rs!amount = 0
+                rs!AllDetails = Trim(LineItem)
+                rs.Update
                 
                 If Not .AtEndOfStream Then LineItem = Trim(.ReadLine)
             End If
         Wend
     End With
     
-    DebugPrint "  ✓ Parsed " & rowCount & " rows in " & Format(Timer - parseStart, "0.0") & " sec", Log
-    
-    ' ═══════════════════════════════════════════════════════
-    ' STEP 2: Database operations (OPTIMIZED!)
-    ' ═══════════════════════════════════════════════════════
-    DebugPrint "Writing to database...", Log
-    
-    Dim dbStart As Double
-    dbStart = Timer
-    
-    On Error GoTo ErrorHandler
-    
-    ' Delete old data for this ValueDate
-    db.Execute "DELETE FROM BonyStatement " & _
-               "WHERE ValueDate = #" & Format(pValueDate, "MM/DD/YYYY") & "#", _
-               dbFailOnError
-    
-    ' Start transaction (CRITICAL for performance!)
-    db.BeginTrans
-    
-    ' Bulk insert from array
-    Dim rs As DAO.Recordset
-    Set rs = db.OpenRecordset("BonyStatement", dbOpenTable, dbAppendOnly)
-    
-    Dim i As Long
-    For i = 1 To rowCount
-        rs.AddNew
-        rs!CashMovementID = arrData(i, 1)
-        rs!ValueDate = arrData(i, 2)
-        rs!FedwireRef = arrData(i, 3)
-        rs!CRNRef = arrData(i, 4)
-        rs!amount = arrData(i, 5)
-        rs!AllDetails = arrData(i, 6)
-        rs.Update
-    Next i
-    
     rs.Close
     Set rs = Nothing
     
-    ' Commit transaction (one disk write!)
+    ' Commit transaction (ONE disk write!)
     db.CommitTrans
     
-    DebugPrint "  ✓ Wrote " & rowCount & " rows in " & Format(Timer - dbStart, "0.0") & " sec", Log
-    DebugPrint "  ✓ Total upload time: " & Format(Timer - parseStart, "0.0") & " sec", Log
+    DebugPrint "  ✓ Uploaded " & rowCount & " rows in " & _
+               Format(Timer - parseStart, "0.0") & " sec", Log
     
-    UploadDataFromImportFolder = True
+    UploadDataFromImportFolder_Simplified = True
     Exit Function
     
 ErrorHandler:
@@ -659,25 +558,11 @@ Public Sub IngestNewData(ByVal isManualUpload As Boolean, Optional ByVal Log As 
             Dim MetaData As TFileMetaData
             MetaData = ParseMetaData(Fle)
             
-            Dim LastUploadLog As DAO.Recordset
-            Set LastUploadLog = GetLastUploadLog(CDbl(MetaData.ValueDate))
-            
-            If LastUploadLog.EOF Then
-                '**********************
-                '*** CALL OPTIMIZED UPLOAD ***
-                '**********************
+            If IsUploadRequired(MetaData) Then
                 UploadDataFromImportFolder Fle, MetaData, Log
                 IsNewDataFound = True
-            Else
-                If MetaData.StatementRunTime - LastUploadLog("BONYRunTime").Value > 0.00000001 Then
-                    '**********************
-                    '*** CALL OPTIMIZED UPLOAD ***
-                    '**********************
-                    UploadDataFromImportFolder Fle, MetaData, Log
-                    IsNewDataFound = True
-                Else
-                    IsNewDataFound = False
-                End If
+			Else
+				IsNewDataFound = False
             End If
             
             MoveDataToStorageFolder Fle, MetaData.ValueDate
@@ -688,13 +573,98 @@ Public Sub IngestNewData(ByVal isManualUpload As Boolean, Optional ByVal Log As 
                     TimeOnTask:=(Timer - Start) / 86400, _
                     LastEmail:=LastEmail, _
                     BONYRunTime:=MetaData.StatementRunTime, _
-                    BONYLastUpdate:=MetaData.StatementLastAcctActivity
-            
+                    BONYLastUpdate:=MetaData.StatementLastAcctActivity        
         End If
     Next Fle
 
     Debug.Print "Run Complete!! - Time Taken: " & Format(Now() - Start, "hh:mm:ss")
 
+	Call CheckIfCompactNeeded
+	
+End Sub
+
+'**********************
+'*** HELPER: Determine if statement should be uploaded ***
+'**********************
+Private Function IsUploadRequired(ByRef MetaData As TFileMetaData) As Boolean
+    ' Returns True if we should upload this statement:
+    ' - No previous upload exists for this date, OR
+    ' - Statement is newer than last uploaded statement
+	IsUploadRequired = False
+	
+	Dim LastUploadLog As DAO.Recordset
+	Set LastUploadLog = GetLastUploadLog(CDbl(MetaData.ValueDate))
+	
+    ' No previous upload? Always upload
+    If LastUploadLog.EOF Then
+        IsUploadRequired = True
+        Exit Function
+    End If
+    
+    ' Compare statement run times
+	If MetaData.StatementRunTime - LastUploadLog("BONYRunTime").Value > 0.00000001 Then
+		IsUploadRequired = True
+	End If
+End Function
+
+
+Public Sub CheckIfCompactNeeded()
+    ' Check when last compact occurred
+    
+    Dim db As DAO.Database
+    Set db = CurrentDb
+    
+    Dim dbPath As String
+    dbPath = db.Name
+    
+    ' Get file modification date (last time database was compacted)
+    Dim lastModified As Date
+    lastModified = FileDateTime(dbPath)
+    
+    ' Check if it's been more than 7 days
+    Dim daysSinceCompact As Long
+    daysSinceCompact = DateDiff("d", lastModified, Now)
+    
+    ' Actually, modification date isn't reliable for compact detection
+    ' Better: Check database size vs expected size
+    
+    Dim actualSize As Long
+    actualSize = FileLen(dbPath)
+    
+    Dim rsCount As DAO.Recordset
+    Set rsCount = db.OpenRecordset("SELECT COUNT(*) AS Total FROM BonyStatement")
+    Dim rowCount As Long
+    rowCount = rsCount!Total
+    rsCount.Close
+    
+    ' Estimate expected size (500 bytes per row + overhead)
+    Dim expectedSize As Long
+    expectedSize = rowCount * 500
+    
+    ' If database is >30% larger than expected, suggest compact
+    If actualSize > (expectedSize * 1.3) Then
+        Dim bloatMB As Long
+        bloatMB = (actualSize - expectedSize) / 1024 / 1024
+        
+        Debug.Print ""
+        Debug.Print "⚠️⚠️⚠️ DATABASE BLOAT DETECTED ⚠️⚠️⚠️"
+        Debug.Print "Database is " & bloatMB & " MB larger than expected"
+        Debug.Print "Recommendation: Run CompactAndRepairDatabase this weekend"
+        Debug.Print ""
+        
+        ' Optional: Show message box
+        Dim response As VbMsgBoxResult
+        response = MsgBox("Database has " & bloatMB & " MB of bloat." & vbCrLf & vbCrLf & _
+                         "Compact database now?" & vbCrLf & _
+                         "(Takes 2-3 minutes)", _
+                         vbYesNo + vbExclamation, "Database Maintenance Needed")
+        
+        If response = vbYes Then
+            Call CompactAndRepairDatabase
+        End If
+    End If
+    
+    Set db = Nothing
 End Sub
 
 ' ... [Keep all other existing functions unchanged: InspectOutlook, GetLastUploadLog, UpdateLog, etc.] ...
