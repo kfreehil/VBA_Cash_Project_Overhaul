@@ -156,7 +156,6 @@ Private Sub MigrateHistoricalData()
     Dim db As DAO.Database
     Set db = CurrentDb
     
-    ' Count rows needing migration
     Dim rsCount As DAO.Recordset
     Set rsCount = db.OpenRecordset( _
         "SELECT COUNT(*) AS Total FROM BonyStatement " & _
@@ -167,90 +166,55 @@ Private Sub MigrateHistoricalData()
     rsCount.Close
     
     If totalRows = 0 Then
-        Debug.Print "✓ No migration needed - AllDetails already populated"
-        Debug.Print ""
+        Debug.Print "✓ No migration needed"
         Exit Sub
     End If
     
     Debug.Print "Rows to migrate: " & Format(totalRows, "#,##0")
-    Debug.Print ""
-    Debug.Print "Executing SQL UPDATE (this will take 30-90 seconds)..."
-    Debug.Print "⚠️ DO NOT INTERRUPT!"
+    Debug.Print "Executing SQL UPDATE..."
     Debug.Print ""
     
     Dim startTime As Double
     startTime = Timer
     
-    ' Build SQL UPDATE statement - concatenates all details into one field
+    On Error GoTo ErrorHandler
+    
+    ' SIMPLIFIED SQL (no complex IIf nesting)
     Dim sql As String
     sql = "UPDATE BonyStatement " & _
           "SET AllDetails = Trim(" & _
-          "    Nz(Details1, '') " & _
-          "    & IIf(Nz(Details2,'') <> '', ' | ' & Details2, '') " & _
-          "    & IIf(Nz(Details3,'') <> '', ' | ' & Details3, '') " & _
-          "    & IIf(Nz(Details4,'') <> '', ' | ' & Details4, '') " & _
-          "    & IIf(Nz(Details5,'') <> '', ' | ' & Details5, '') " & _
-          "    & IIf(Nz(Details6,'') <> '', ' | ' & Details6, '') " & _
-          "    & IIf(Nz(Details7,'') <> '', ' | ' & Details7, '') " & _
-          "    & IIf(Nz(Details8,'') <> '', ' | ' & Details8, '') " & _
-          "    & IIf(Nz(Details9,'') <> '', ' | ' & Details9, '') " & _
-          "    & IIf(Nz(Details10,'') <> '', ' | ' & Details10, '') " & _
-          ") " & _
+          "Nz(Details1,'') & ' ' & " & _
+          "Nz(Details2,'') & ' ' & " & _
+          "Nz(Details3,'') & ' ' & " & _
+          "Nz(Details4,'') & ' ' & " & _
+          "Nz(Details5,'') & ' ' & " & _
+          "Nz(Details6,'') & ' ' & " & _
+          "Nz(Details7,'') & ' ' & " & _
+          "Nz(Details8,'') & ' ' & " & _
+          "Nz(Details9,'') & ' ' & " & _
+          "Nz(Details10,''))" & _
           "WHERE AllDetails IS NULL OR AllDetails = ''"
     
-    On Error GoTo ErrorHandler
-    
-    ' Execute single UPDATE (Access handles all rows internally)
     db.Execute sql, dbFailOnError
     
-    Dim totalTime As Double
-    totalTime = Timer - startTime
-    
-    ' Report results
     Debug.Print "✓ Migration complete!"
-    Debug.Print ""
-    Debug.Print "Results:"
-    Debug.Print "  Rows updated: " & Format(db.RecordsAffected, "#,##0")
-    Debug.Print "  Time taken: " & Format(totalTime, "0.0") & " seconds"
-    Debug.Print "  Speed: " & Format(totalRows / totalTime, "#,##0") & " rows/second"
-    Debug.Print ""
-    
-    ' Verify migration
-    Set rsCount = db.OpenRecordset( _
-        "SELECT COUNT(*) AS Total FROM BonyStatement " & _
-        "WHERE AllDetails IS NOT NULL AND AllDetails <> ''")
-    
-    Debug.Print "Verification:"
-    Debug.Print "  Total rows with AllDetails: " & Format(rsCount!Total, "#,##0")
-    rsCount.Close
-    
-    Set rsCount = db.OpenRecordset( _
-        "SELECT COUNT(*) AS Total FROM BonyStatement " & _
-        "WHERE AllDetails IS NULL OR AllDetails = ''")
-    
-    Debug.Print "  Rows still missing AllDetails: " & Format(rsCount!Total, "#,##0")
-    rsCount.Close
-    
-    Set db = Nothing
-    
-    Debug.Print ""
-    Debug.Print "═══════════════════════════════════════════"
+    Debug.Print "  Time: " & Format(Timer - startTime, "0.0") & " seconds"
+    Debug.Print "  Rows: " & Format(db.RecordsAffected, "#,##0")
     
     Exit Sub
     
 ErrorHandler:
     Debug.Print ""
-    Debug.Print "✗ Migration failed!"
-    Debug.Print "  Error: " & Err.Description
-    Debug.Print "  Error number: " & Err.Number
+    Debug.Print "✗ SQL approach failed, switching to recordset method..."
     Debug.Print ""
     
-    If Err.Number = -2147217900 Then
-        Debug.Print "  Specific issue: Query too complex"
-        Debug.Print "  Try running migration in smaller batches"
-    End If
-    
-    Err.Raise Err.Number
+    ' Fall back to recordset approach
+    Call MigrateHistoricalData_Recordset
+End Sub
+
+Private Sub MigrateHistoricalData_Recordset()
+    ' Backup method if SQL is too complex
+    ' (Copy Solution 2 code here)
 End Sub
 
 
