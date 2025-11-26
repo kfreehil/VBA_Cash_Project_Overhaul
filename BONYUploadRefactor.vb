@@ -1245,3 +1245,80 @@ OPTIMIZATION 2: TRANSACTIONS
 
 You tested: Upload speed (transactions)
 You should test: Query speed (indexes) ← THIS is the dramatic improvement!
+
+
+TESTING INDEX REMOVAL AND CREATION
+
+Public Sub TestIndexRebuildTime()
+    Debug.Print "═══════════════════════════════════════════"
+    Debug.Print "INDEX REBUILD TIME TEST"
+    Debug.Print "═══════════════════════════════════════════"
+    Debug.Print ""
+    
+    Dim db As DAO.Database
+    Set db = CurrentDb
+    
+    ' Get row count
+    Dim rs As DAO.Recordset
+    Set rs = db.OpenRecordset("SELECT COUNT(*) AS Total FROM BonyStatement")
+    Debug.Print "Table rows: " & Format(rs!Total, "#,##0")
+    rs.Close
+    Debug.Print ""
+    
+    ' Time DROP
+    Dim dropStart As Double
+    dropStart = Timer
+    
+    On Error Resume Next
+    db.Execute "DROP INDEX idx_valuedate ON BonyStatement"
+    On Error GoTo 0
+    
+    Debug.Print "DROP INDEX: " & Format(Timer - dropStart, "0.00") & " seconds"
+    
+    ' Time CREATE
+    Dim createStart As Double
+    createStart = Timer
+    
+    db.Execute "CREATE INDEX idx_valuedate ON BonyStatement(ValueDate)"
+    
+    Debug.Print "CREATE INDEX: " & Format(Timer - createStart, "0.00") & " seconds"
+    Debug.Print ""
+    Debug.Print "TOTAL overhead: " & Format(Timer - dropStart, "0.00") & " seconds"
+    Debug.Print "═══════════════════════════════════════════"
+    
+    Set db = Nothing
+End Sub
+```
+
+---
+
+## 📊 **Expected Results**
+```
+═══════════════════════════════════════════
+INDEX REBUILD TIME TEST
+═══════════════════════════════════════════
+
+Table rows: 1,000,000
+
+DROP INDEX: 0.10 seconds
+CREATE INDEX: 45.00 seconds  ← THIS is the expensive part!
+
+TOTAL overhead: 45.10 seconds
+═══════════════════════════════════════════
+```
+
+---
+
+## 🎯 **The Point**
+```
+Current approach (keep index):
+├─ Index maintenance during DELETE: ~0.1 sec
+├─ Index maintenance during INSERT: ~0.2 sec
+└─ Total overhead: ~0.3 seconds ✅
+
+Drop/Recreate approach:
+├─ DROP: ~0.1 seconds
+├─ CREATE on 1M rows: ~30-60 seconds ❌
+└─ Total overhead: ~30-60 seconds ❌
+
+Difference: 100-200x SLOWER with drop/recreate!
