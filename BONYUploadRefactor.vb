@@ -1246,8 +1246,9 @@ OPTIMIZATION 2: TRANSACTIONS
 You tested: Upload speed (transactions)
 You should test: Query speed (indexes) ← THIS is the dramatic improvement!
 
-
-TESTING INDEX REMOVAL AND CREATION
+'====================================
+'TESTING INDEX REMOVAL AND CREATION
+'====================================
 
 Public Sub TestIndexRebuildTime()
     Debug.Print "═══════════════════════════════════════════"
@@ -1322,3 +1323,94 @@ Drop/Recreate approach:
 └─ Total overhead: ~30-60 seconds ❌
 
 Difference: 100-200x SLOWER with drop/recreate!
+
+
+'======================================================================
+'TESTING DATABASE BLOAT TO UNDERSTAND THE BENEFITS OF DAILY COMPACTING
+'=======================================================================
+
+Public Sub CheckDatabaseBloat()
+    Debug.Print "═══════════════════════════════════════════"
+    Debug.Print "DATABASE BLOAT CHECK"
+    Debug.Print "═══════════════════════════════════════════"
+    Debug.Print ""
+    
+    Dim db As DAO.Database
+    Set db = CurrentDb
+    
+    ' Get file size
+    Dim dbPath As String
+    dbPath = db.Name
+    
+    Dim actualSize As Long
+    actualSize = FileLen(dbPath)
+    
+    ' Get row count
+    Dim rs As DAO.Recordset
+    Set rs = db.OpenRecordset("SELECT COUNT(*) AS Total FROM BonyStatement")
+    Dim rowCount As Long
+    rowCount = rs!Total
+    rs.Close
+    
+    ' Estimate expected size (~500 bytes per row + overhead)
+    Dim expectedSize As Long
+    expectedSize = rowCount * 500 + 10000000  ' 10 MB base overhead
+    
+    ' Calculate bloat
+    Dim bloat As Long
+    bloat = actualSize - expectedSize
+    
+    Dim bloatPct As Double
+    bloatPct = (bloat / actualSize) * 100
+    
+    Debug.Print "Database: " & dbPath
+    Debug.Print "Actual size: " & Format(actualSize / 1024 / 1024, "#,##0.0") & " MB"
+    Debug.Print "Row count: " & Format(rowCount, "#,##0")
+    Debug.Print "Expected size: " & Format(expectedSize / 1024 / 1024, "#,##0.0") & " MB"
+    Debug.Print "Estimated bloat: " & Format(bloat / 1024 / 1024, "#,##0.0") & " MB"
+    Debug.Print "Bloat %: " & Format(bloatPct, "0.0") & "%"
+    Debug.Print ""
+    
+    If bloatPct < 10 Then
+        Debug.Print "✓ Database is healthy (< 10% bloat)"
+    ElseIf bloatPct < 25 Then
+        Debug.Print "⚠️ Moderate bloat (10-25%) - consider compacting"
+    Else
+        Debug.Print "❌ High bloat (> 25%) - compact soon!"
+    End If
+    
+    Debug.Print "═══════════════════════════════════════════"
+    
+    Set db = Nothing
+End Sub
+```
+
+**Run this at END of day Friday (before compact) to see actual bloat!**
+
+---
+
+## 🎯 **My Revised Recommendation**
+
+### **For Your Situation:**
+```
+Pattern: 35,000 deleted ghosts per day
+Table: 1,065,422 rows
+Bloat rate: ~12 MB/day
+
+Recommendation: WEEKLY is still fine ✅
+
+Why:
+├─ 60 MB weekly bloat is only ~5% of your 1.1 GB database
+├─ Query performance impact: Negligible
+├─ Daily compact: Overkill for your workload
+├─ Weekly compact: Right balance of effort vs benefit
+```
+
+### **BUT Consider Daily If:**
+```
+Switch to daily compact IF:
+├─ You notice Friday queries slower than Monday
+├─ Bloat check shows > 20% by end of week
+├─ Database grows past 1.5 GB
+├─ You want zero tolerance for bloat
+└─ You can automate it (no manual effort)
