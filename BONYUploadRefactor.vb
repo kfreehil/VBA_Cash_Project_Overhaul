@@ -233,11 +233,9 @@ Public Sub CompactAndRepairDatabase()
     Debug.Print "Size before: " & Format(sizeBefore / 1024 / 1024, "#,##0.0") & " MB"
     Debug.Print ""
     
-    ' Create temp path for compacted database
     Dim tempPath As String
     tempPath = Replace(dbPath, ".accdb", "_compacted_" & Format(Now, "yyyymmdd_hhnnss") & ".accdb")
     
-    ' Backup path (will rename original to this AFTER closing)
     Dim backupPath As String
     backupPath = Replace(dbPath, ".accdb", "_backup_" & Format(Now, "yyyymmdd_hhnnss") & ".accdb")
     
@@ -246,30 +244,27 @@ Public Sub CompactAndRepairDatabase()
     Debug.Print ""
     
     ' Close all open objects
-    DoCmd.Close acForm, "", acSaveNo
-    DoCmd.Close acReport, "", acSaveNo
-    DoCmd.Close acQuery, "", acSaveNo
+    CloseAllOpenObjects  ' ← FIXED
     
     ' Give Access a moment to release handles
     DoEvents
-    Application.Wait Now + TimeValue("0:00:01")
+    Pause 1
     
     On Error GoTo ErrorHandler
     
-    ' Step 1: Compact current database to temp file
-    ' (This works because we're creating a NEW file, not copying the open one)
+    ' Step 1: Compact to temp file
     DBEngine.CompactDatabase dbPath, tempPath
     
-    ' Step 2: Close the current database
+    ' Step 2: Close current database
     Application.CloseCurrentDatabase
     
     ' Step 3: Rename original to backup
     Name dbPath As backupPath
     
-    ' Step 4: Rename compacted to original name
+    ' Step 4: Rename compacted to original
     Name tempPath As dbPath
     
-    ' Step 5: Reopen the compacted database
+    ' Step 5: Reopen
     Application.OpenCurrentDatabase dbPath
     
     ' Report results
@@ -289,21 +284,44 @@ ErrorHandler:
     Debug.Print "✗ Compact failed: " & Err.Description
     Debug.Print ""
     
-    ' Clean up temp file if it exists
     On Error Resume Next
     If Dir(tempPath) <> "" Then Kill tempPath
-    On Error GoTo 0
-    
-    ' Try to reopen original if closed
-    On Error Resume Next
     If CurrentDb Is Nothing Then
         Application.OpenCurrentDatabase dbPath
     End If
     On Error GoTo 0
-    
-    Err.Raise Err.Number, , "Compact failed: " & Err.Description
 End Sub
 
+'**********************
+'*** HELPER: Close all open Access objects ***
+'**********************
+Private Sub CloseAllOpenObjects()
+    On Error Resume Next
+    
+    ' Close all open forms
+    Do While Forms.Count > 0
+        DoCmd.Close acForm, Forms(0).Name, acSaveNo
+    Loop
+    
+    ' Close all open reports
+    Do While Reports.Count > 0
+        DoCmd.Close acReport, Reports(0).Name, acSaveNo
+    Loop
+    
+    On Error GoTo 0
+End Sub
+
+'**********************
+'*** HELPER: Pause execution (Access-compatible) ***
+'**********************
+Private Sub Pause(seconds As Single)
+    Dim endTime As Single
+    endTime = Timer + seconds
+    
+    Do While Timer < endTime
+        DoEvents
+    Loop
+End Sub
 
 ''2️⃣ Module: 6_UploadToDatabase (REPLACE EXISTING)
 
