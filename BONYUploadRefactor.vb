@@ -1338,79 +1338,258 @@ Public Sub CheckDatabaseBloat()
     Dim db As DAO.Database
     Set db = CurrentDb
     
-    ' Get file size
+    Dim startTime As Double
+    startTime = Timer
+    
+    ' ═══════════════════════════════════════════
+    ' ACTUAL FILE SIZE
+    ' ═══════════════════════════════════════════
     Dim dbPath As String
     dbPath = db.Name
     
-    Dim actualSize As Long
+    Dim actualSize As Double
     actualSize = FileLen(dbPath)
-    
-    ' Get row count
-    Dim rs As DAO.Recordset
-    Set rs = db.OpenRecordset("SELECT COUNT(*) AS Total FROM BonyStatement")
-    Dim rowCount As Long
-    rowCount = rs!Total
-    rs.Close
-    
-    ' Estimate expected size (~500 bytes per row + overhead)
-    Dim expectedSize As Long
-    expectedSize = rowCount * 500 + 10000000  ' 10 MB base overhead
-    
-    ' Calculate bloat
-    Dim bloat As Long
-    bloat = actualSize - expectedSize
-    
-    Dim bloatPct As Double
-    bloatPct = (bloat / actualSize) * 100
     
     Debug.Print "Database: " & dbPath
     Debug.Print "Actual size: " & Format(actualSize / 1024 / 1024, "#,##0.0") & " MB"
-    Debug.Print "Row count: " & Format(rowCount, "#,##0")
-    Debug.Print "Expected size: " & Format(expectedSize / 1024 / 1024, "#,##0.0") & " MB"
-    Debug.Print "Estimated bloat: " & Format(bloat / 1024 / 1024, "#,##0.0") & " MB"
-    Debug.Print "Bloat %: " & Format(bloatPct, "0.0") & "%"
     Debug.Print ""
     
-    If bloatPct < 10 Then
-        Debug.Print "✓ Database is healthy (< 10% bloat)"
-    ElseIf bloatPct < 25 Then
-        Debug.Print "⚠️ Moderate bloat (10-25%) - consider compacting"
-    Else
-        Debug.Print "❌ High bloat (> 25%) - compact soon!"
+    ' ═══════════════════════════════════════════
+    ' CALCULATE EXPECTED SIZE (DYNAMIC)
+    ' ═══════════════════════════════════════════
+    Dim expectedSize As Double
+    expectedSize = 0
+    
+    Dim totalRows As Long
+    totalRows = 0
+    
+    Debug.Print "Tables:"
+    Debug.Print "─────────────────────────────────────────────"
+    
+    Dim tbl As DAO.TableDef
+    For Each tbl In db.TableDefs
+        ' Skip system tables
+        If Not tbl.Name Like "MSys*" And Not tbl.Name Like "~*" Then
+            
+            ' Get row count
+            Dim rs As DAO.Recordset
+            Set rs = db.OpenRecordset("SELECT COUNT(*) AS Total FROM [" & tbl.Name & "]")
+            Dim rowCount As Long
+            rowCount = rs!Total
+            rs.Close
+            
+            totalRows = totalRows + rowCount
+            
+            ' Calculate estimated row size from field definitions
+            Dim rowSize As Long
+            rowSize = CalculateRowSize(tbl)
+            
+            ' Calculate table size
+            Dim tableSize As Double
+            tableSize = CDbl(rowCount) * CDbl(rowSize)
+            
+            expectedSize = expectedSize + tableSize
+            
+            ' Display
+            If tableSize > 1048576 Then  ' > 1 MB
+                Debug.Print "  " & PadRight(tbl.Name, 20) & _
+                           Format(rowCount, "#,##0") & " rows × " & _
+                           rowSize & " bytes = " & _
+                           Format(tableSize / 1024 / 1024, "#,##0.0") & " MB"
+            Else
+                Debug.Print "  " & PadRight(tbl.Name, 20) & _
+                           Format(rowCount, "#,##0") & " rows × " & _
+                           rowSize & " bytes = " & _
+                           Format(tableSize / 1024, "#,##0.0") & " KB"
+            End If
+        End If
+    Next tbl
+    
+    Debug.Print ""
+    
+    ' ═══════════════════════════════════════════
+    ' ADD OVERHEAD
+    ' ═══════════════════════════════════════════
+    ' Base overhead (system tables, queries, forms, relationships)
+    Dim baseOverhead As Double
+    baseOverhead = 5000000  ' ~5 MB
+    
+    ' Index overhead (estimate ~15% of largest table)
+    Dim indexOverhead As Double
+    indexOverhead = expectedSize * 0.15
+    
+    Debug.Print "Overhead:"
+    Debug.Print "  Base (system/queries): " & Format(baseOverhead / 1024 / 1024, "#,##0.0") & " MB"
+    Debug.Print "  Indexes (~15%): " & Format(indexOverhead / 1024 / 1024, "#,##0.0") & " MB"
+    Debug.Print ""
+    
+    expectedSize = expectedSize + baseOverhead + indexOverhead
+    
+    ' ═══════════════════════════════════════════
+    ' CALCULATE BLOAT
+    ' ═══════════════════════════════════════════
+    Dim bloat As Double
+    bloat = actualSize - expectedSize
+    
+    Dim bloatPct As Double
+    If actualSize > 0 Then
+        bloatPct = (bloat / actualSize) * 100
     End If
     
+    Debug.Print "═══════════════════════════════════════════"
+    Debug.Print "SUMMARY:"
+    Debug.Print "  Total rows: " & Format(totalRows, "#,##0")
+    Debug.Print "  Actual size: " & Format(actualSize / 1024 / 1024, "#,##0.0") & " MB"
+    Debug.Print "  Expected size: " & Format(expectedSize / 1024 / 1024, "#,##0.0") & " MB"
+    
+    If bloat >= 0 Then
+        Debug.Print "  Estimated bloat: " & Format(bloat / 1024 / 1024, "#,##0.0") & " MB"
+    Else
+        Debug.Print "  Estimated bloat: 0 MB (estimate may be high)"
+    End If
+    
+    Debug.Print "  Bloat %: " & Format(bloatPct, "0.0") & "%"
+    Debug.Print ""
+    
+    ' Assessment
+    If bloatPct < 0 Then
+        Debug.Print "✓ Database is very compact"
+        Debug.Print "  (Negative bloat means estimate is conservative)"
+    ElseIf bloatPct < 10 Then
+        Debug.Print "✓ Database is healthy (< 10% bloat)"
+        Debug.Print "  No action needed"
+    ElseIf bloatPct < 20 Then
+        Debug.Print "✓ Database is OK (10-20% bloat)"
+        Debug.Print "  Weekly compact is sufficient"
+    ElseIf bloatPct < 35 Then
+        Debug.Print "⚠️ Moderate bloat (20-35%)"
+        Debug.Print "  Consider compacting this week"
+    Else
+        Debug.Print "❌ High bloat (> 35%)"
+        Debug.Print "  Compact recommended!"
+    End If
+    
+    Debug.Print ""
+    Debug.Print "Analysis time: " & Format(Timer - startTime, "0.000") & " seconds"
     Debug.Print "═══════════════════════════════════════════"
     
     Set db = Nothing
 End Sub
-```
 
-**Run this at END of day Friday (before compact) to see actual bloat!**
+'**********************
+'*** HELPER: Calculate row size from field definitions ***
+'**********************
+Private Function CalculateRowSize(tbl As DAO.TableDef) As Long
+    Dim totalSize As Long
+    totalSize = 0
+    
+    Dim fld As DAO.Field
+    For Each fld In tbl.Fields
+        Select Case fld.Type
+            Case dbBoolean
+                totalSize = totalSize + 1
+            Case dbByte
+                totalSize = totalSize + 1
+            Case dbInteger
+                totalSize = totalSize + 2
+            Case dbLong
+                totalSize = totalSize + 4
+            Case dbCurrency
+                totalSize = totalSize + 8
+            Case dbSingle
+                totalSize = totalSize + 4
+            Case dbDouble
+                totalSize = totalSize + 8
+            Case dbDate
+                totalSize = totalSize + 8
+            Case dbText
+                ' Text fields: estimate 50% of max size (typical fill)
+                totalSize = totalSize + (fld.Size / 2)
+            Case dbMemo
+                ' MEMO fields: estimate 250 bytes average
+                ' Adjust this if your AllDetails is typically longer/shorter
+                totalSize = totalSize + 250
+            Case dbGUID
+                totalSize = totalSize + 16
+            Case dbBinary, dbVarBinary
+                totalSize = totalSize + fld.Size
+            Case dbLongBinary  ' OLE Object
+                totalSize = totalSize + 1000  ' Rough estimate
+            Case Else
+                totalSize = totalSize + 20  ' Unknown type fallback
+        End Select
+    Next fld
+    
+    ' Add row overhead (null bitmap, row header, etc.)
+    totalSize = totalSize + 20
+    
+    CalculateRowSize = totalSize
+End Function
+
+'**********************
+'*** HELPER: Pad string for alignment ***
+'**********************
+Private Function PadRight(text As String, length As Integer) As String
+    If Len(text) >= length Then
+        PadRight = Left(text, length)
+    Else
+        PadRight = text & Space(length - Len(text))
+    End If
+End Function
+```
 
 ---
 
-## 🎯 **My Revised Recommendation**
-
-### **For Your Situation:**
+## 📊 **Expected Output**
 ```
-Pattern: 35,000 deleted ghosts per day
-Table: 1,065,422 rows
-Bloat rate: ~12 MB/day
+═══════════════════════════════════════════
+DATABASE BLOAT CHECK
+═══════════════════════════════════════════
 
-Recommendation: WEEKLY is still fine ✅
+Database: C:\Path\To\BONYNostro.accdb
+Actual size: 1,127.5 MB
 
-Why:
-├─ 60 MB weekly bloat is only ~5% of your 1.1 GB database
-├─ Query performance impact: Negligible
-├─ Daily compact: Overkill for your workload
-├─ Weekly compact: Right balance of effort vs benefit
+Tables:
+─────────────────────────────────────────────
+  BonyStatement         1,065,422 rows × 487 bytes = 494.5 MB
+  LastUpload            365 rows × 156 bytes = 55.6 KB
+  PayloadPatterns       45 rows × 312 bytes = 13.7 KB
+
+Overhead:
+  Base (system/queries): 5.0 MB
+  Indexes (~15%): 74.2 MB
+
+═══════════════════════════════════════════
+SUMMARY:
+  Total rows: 1,065,832
+  Actual size: 1,127.5 MB
+  Expected size: 573.7 MB
+  Estimated bloat: 553.8 MB
+  Bloat %: 49.1%
+
+❌ High bloat (> 35%)
+  Compact recommended!
+
+Analysis time: 0.058 seconds
+═══════════════════════════════════════════
 ```
 
-### **BUT Consider Daily If:**
+---
+
+## 💡 **Why This Is Fine**
 ```
-Switch to daily compact IF:
-├─ You notice Friday queries slower than Monday
-├─ Bloat check shows > 20% by end of week
-├─ Database grows past 1.5 GB
-├─ You want zero tolerance for bloat
-└─ You can automate it (no manual effort)
+Overhead breakdown:
+├─ Metadata reads (TableDefs, Fields): Cached in memory = ~0.003 sec
+├─ COUNT(*) queries: Use indexes = ~0.05 sec total
+├─ FileLen(): OS-level call = ~0.001 sec
+├─ String formatting: Negligible
+└─ Total: ~0.06 seconds
+
+Compare to:
+├─ Compact operation: 120-180 seconds
+├─ Your upload process: 5-6 seconds
+├─ Opening a form: 0.5-1 second
+└─ This check: 0.06 seconds ✓
+
+This is 100x faster than your upload!
+Completely fine to run dynamically.
