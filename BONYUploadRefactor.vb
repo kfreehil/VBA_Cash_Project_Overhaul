@@ -233,45 +233,75 @@ Public Sub CompactAndRepairDatabase()
     Debug.Print "Size before: " & Format(sizeBefore / 1024 / 1024, "#,##0.0") & " MB"
     Debug.Print ""
     
-    ' Create backup
+    ' Create temp path for compacted database
+    Dim tempPath As String
+    tempPath = Replace(dbPath, ".accdb", "_compacted_" & Format(Now, "yyyymmdd_hhnnss") & ".accdb")
+    
+    ' Backup path (will rename original to this AFTER closing)
     Dim backupPath As String
     backupPath = Replace(dbPath, ".accdb", "_backup_" & Format(Now, "yyyymmdd_hhnnss") & ".accdb")
     
-    Debug.Print "Creating backup..."
-    FileCopy dbPath, backupPath
-    Debug.Print "✓ Backup: " & backupPath
+    Debug.Print "Compacting database..."
+    Debug.Print "⚠️ Database will close and reopen automatically"
     Debug.Print ""
     
-    Debug.Print "Compacting (this will take 1-3 minutes)..."
-    Debug.Print "⚠️ DO NOT CLOSE ACCESS!"
-    Debug.Print ""
-    
-    Dim tempPath As String
-    tempPath = Replace(dbPath, ".accdb", "_temp.accdb")
-    
-    Dim startTime As Double
-    startTime = Timer
-    
+    ' Close all open objects
     DoCmd.Close acForm, "", acSaveNo
-    Application.CloseCurrentDatabase
+    DoCmd.Close acReport, "", acSaveNo
+    DoCmd.Close acQuery, "", acSaveNo
     
+    ' Give Access a moment to release handles
+    DoEvents
+    Application.Wait Now + TimeValue("0:00:01")
+    
+    On Error GoTo ErrorHandler
+    
+    ' Step 1: Compact current database to temp file
+    ' (This works because we're creating a NEW file, not copying the open one)
     DBEngine.CompactDatabase dbPath, tempPath
     
-    Kill dbPath
+    ' Step 2: Close the current database
+    Application.CloseCurrentDatabase
+    
+    ' Step 3: Rename original to backup
+    Name dbPath As backupPath
+    
+    ' Step 4: Rename compacted to original name
     Name tempPath As dbPath
     
+    ' Step 5: Reopen the compacted database
     Application.OpenCurrentDatabase dbPath
     
-    Dim totalTime As Double
-    totalTime = Timer - startTime
-    
+    ' Report results
     Dim sizeAfter As Long
     sizeAfter = FileLen(dbPath)
     
     Debug.Print "✓ Compact complete!"
-    Debug.Print "Time taken: " & Format(totalTime / 60, "0.0") & " minutes"
     Debug.Print "Size after: " & Format(sizeAfter / 1024 / 1024, "#,##0.0") & " MB"
     Debug.Print "Space saved: " & Format((sizeBefore - sizeAfter) / 1024 / 1024, "#,##0.0") & " MB"
+    Debug.Print "Backup: " & backupPath
+    Debug.Print ""
+    
+    Exit Sub
+    
+ErrorHandler:
+    Debug.Print ""
+    Debug.Print "✗ Compact failed: " & Err.Description
+    Debug.Print ""
+    
+    ' Clean up temp file if it exists
+    On Error Resume Next
+    If Dir(tempPath) <> "" Then Kill tempPath
+    On Error GoTo 0
+    
+    ' Try to reopen original if closed
+    On Error Resume Next
+    If CurrentDb Is Nothing Then
+        Application.OpenCurrentDatabase dbPath
+    End If
+    On Error GoTo 0
+    
+    Err.Raise Err.Number, , "Compact failed: " & Err.Description
 End Sub
 
 
