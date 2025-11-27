@@ -587,6 +587,12 @@ Public Sub IngestNewData(ByVal isManualUpload As Boolean, Optional ByVal Log As 
     Debug.Print "Run Complete!! - Time Taken: " & Format(Now() - Start, "hh:mm:ss")
 
     ' ════════════════════════════════════════════
+    ' ALWAYS DISABLE AUTO-COMPACT FIRST
+    ' (Will be re-enabled only if maintenance runs)
+    ' ════════════════════════════════════════════
+    Application.SetOption "Auto Compact", False
+	
+    ' ════════════════════════════════════════════
     ' DAILY MAINTENANCE (FIRST RUN OF DAY ONLY)
     ' ════════════════════════════════════════════
     If IsDailyMaintenanceNeeded() Then
@@ -630,10 +636,8 @@ Public Function IsDailyMaintenanceNeeded() As Boolean
 End Function
 
 Public Sub PerformDailyMaintenance(Optional ByVal Force As Boolean = False)
-    ' Run once per day: Compact database + Refresh index
-    ' Set Force = True to run regardless of last maintenance date
+    ' Run once per day: Compact + Refresh index
     
-    ' Check if needed (unless forced)
     If Not Force Then
         If DateValue(GetLastMaintenanceDate()) = DateValue(Now) Then
             Debug.Print "Daily maintenance already completed today - skipping"
@@ -647,15 +651,16 @@ Public Sub PerformDailyMaintenance(Optional ByVal Force As Boolean = False)
     Debug.Print "╚═══════════════════════════════════════════╝"
     Debug.Print ""
     
-    Dim startTime As Double
-    startTime = Timer
-    
     Dim db As DAO.Database
     Set db = CurrentDb
     
-    ' Step 1: Compact database
-    Debug.Print "Step 1: Compacting database..."
-    Call CompactAndRepairDatabase
+    Dim startTime As Double
+    startTime = Timer
+    
+    ' Step 1: Enable auto-compact (will run when Access closes TODAY)
+    Debug.Print "Step 1: Enabling database compact..."
+    Application.SetOption "Auto Compact", True
+    Debug.Print "  ✓ Auto Compact on Close: ENABLED"
     Debug.Print ""
     
     ' Step 2: Refresh ValueDate index
@@ -674,7 +679,7 @@ Public Sub PerformDailyMaintenance(Optional ByVal Force As Boolean = False)
     Debug.Print ""
     
     ' Step 3: Record completion
-    Call SetLastMaintenanceDate(Now)
+    SetLastMaintenanceDate Now
     
     Debug.Print "═══════════════════════════════════════════"
     Debug.Print "✓ Daily maintenance complete!"
