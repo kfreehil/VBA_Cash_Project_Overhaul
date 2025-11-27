@@ -491,11 +491,6 @@ Public Sub IngestNewData(ByVal isManualUpload As Boolean, Optional ByVal Log As 
     Dim Start As Date
     Start = Now()
     
-    '**********************
-    '*** NEW: ENSURE INDEXES EXIST ***
-    '**********************
-    EnsureIndexesExist  ' Quick check - creates if missing
-    
     If Not isManualUpload Then
         Dim LastEmail As Outlook.MailItem
         Dim IsNewDataFound As Boolean
@@ -543,7 +538,12 @@ Public Sub IngestNewData(ByVal isManualUpload As Boolean, Optional ByVal Log As 
 
     Debug.Print "Run Complete!! - Time Taken: " & Format(Now() - Start, "hh:mm:ss")
 
-	Call CheckIfCompactNeeded
+    ' ════════════════════════════════════════════
+    ' DAILY MAINTENANCE (FIRST RUN OF DAY ONLY)
+    ' ════════════════════════════════════════════
+    If IsDailyMaintenanceNeeded() Then
+        PerformDailyMaintenance
+    End If
 	
 End Sub
 
@@ -572,66 +572,107 @@ Private Function IsUploadRequired(ByRef MetaData As TFileMetaData) As Boolean
 End Function
 
 
-Public Sub CheckIfCompactNeeded()
-    ' Check when last compact occurred
+'**********************
+'*** DAILY MAINTENANCE ***
+'**********************
+
+Public Function IsDailyMaintenanceNeeded() As Boolean
+    ' Returns TRUE if maintenance hasn't run today
+    IsDailyMaintenanceNeeded = (DateValue(GetLastMaintenanceDate()) <> DateValue(Now))
+End Function
+
+Public Sub PerformDailyMaintenance(Optional ByVal Force As Boolean = False)
+    ' Run once per day: Compact database + Refresh index
+    ' Set Force = True to run regardless of last maintenance date
+    
+    ' Check if needed (unless forced)
+    If Not Force Then
+        If DateValue(GetLastMaintenanceDate()) = DateValue(Now) Then
+            Debug.Print "Daily maintenance already completed today - skipping"
+            Exit Sub
+        End If
+    End If
+    
+    Debug.Print ""
+    Debug.Print "╔═══════════════════════════════════════════╗"
+    Debug.Print "║         DAILY MAINTENANCE                 ║"
+    Debug.Print "╚═══════════════════════════════════════════╝"
+    Debug.Print ""
+    
+    Dim startTime As Double
+    startTime = Timer
     
     Dim db As DAO.Database
     Set db = CurrentDb
     
-    Dim dbPath As String
-    dbPath = db.Name
+    ' Step 1: Compact database
+    Debug.Print "Step 1: Compacting database..."
+    Call CompactAndRepairDatabase
+    Debug.Print ""
     
-    ' Get file modification date (last time database was compacted)
-    Dim lastModified As Date
-    lastModified = FileDateTime(dbPath)
+    ' Step 2: Refresh ValueDate index
+    Debug.Print "Step 2: Refreshing ValueDate index..."
     
-    ' Check if it's been more than 7 days
-    Dim daysSinceCompact As Long
-    daysSinceCompact = DateDiff("d", lastModified, Now)
+    Dim indexStart As Double
+    indexStart = Timer
     
-    ' Actually, modification date isn't reliable for compact detection
-    ' Better: Check database size vs expected size
+    On Error Resume Next
+    db.Execute "DROP INDEX idx_valuedate ON BonyStatement"
+    On Error GoTo 0
     
-    Dim actualSize As Long
-    actualSize = FileLen(dbPath)
+    db.Execute "CREATE INDEX idx_valuedate ON BonyStatement(ValueDate)"
     
-    Dim rsCount As DAO.Recordset
-    Set rsCount = db.OpenRecordset("SELECT COUNT(*) AS Total FROM BonyStatement")
-    Dim rowCount As Long
-    rowCount = rsCount!Total
-    rsCount.Close
+    Debug.Print "  ✓ Index refreshed in " & Format(Timer - indexStart, "0.00") & " seconds"
+    Debug.Print ""
     
-    ' Estimate expected size (500 bytes per row + overhead)
-    Dim expectedSize As Long
-    expectedSize = rowCount * 500
+    ' Step 3: Record completion
+    Call SetLastMaintenanceDate(Now)
     
-    ' If database is >30% larger than expected, suggest compact
-    If actualSize > (expectedSize * 1.3) Then
-        Dim bloatMB As Long
-        bloatMB = (actualSize - expectedSize) / 1024 / 1024
-        
-        Debug.Print ""
-        Debug.Print "⚠️⚠️⚠️ DATABASE BLOAT DETECTED ⚠️⚠️⚠️"
-        Debug.Print "Database is " & bloatMB & " MB larger than expected"
-        Debug.Print "Recommendation: Run CompactAndRepairDatabase this weekend"
-        Debug.Print ""
-        
-        ' Optional: Show message box
-        Dim response As VbMsgBoxResult
-        response = MsgBox("Database has " & bloatMB & " MB of bloat." & vbCrLf & vbCrLf & _
-                         "Compact database now?" & vbCrLf & _
-                         "(Takes 2-3 minutes)", _
-                         vbYesNo + vbExclamation, "Database Maintenance Needed")
-        
-        If response = vbYes Then
-            Call CompactAndRepairDatabase
-        End If
-    End If
+    Debug.Print "═══════════════════════════════════════════"
+    Debug.Print "✓ Daily maintenance complete!"
+    Debug.Print "  Total time: " & Format(Timer - startTime, "0.0") & " seconds"
+    Debug.Print "═══════════════════════════════════════════"
+    Debug.Print ""
     
     Set db = Nothing
 End Sub
 
-' ... [Keep all other existing functions unchanged: InspectOutlook, GetLastUploadLog, UpdateLog, etc.] ...
+Private Function GetLastMaintenanceDate() As Date
+    On Error Resume Next
+    
+    Dim db As DAO.Database
+    Set db = CurrentDb
+    
+    GetLastMaintenanceDate = db.Properties("LastMaintenanceDate").Value
+    
+    If Err.Number <> 0 Then
+        ' Property doesn't exist - return old date to force maintenance
+        GetLastMaintenanceDate = #1/1/2000#
+        Err.Clear
+    End If
+    
+    On Error GoTo 0
+    Set db = Nothing
+End Function
+
+Private Sub SetLastMaintenanceDate(maintenanceDate As Date)
+    Dim db As DAO.Database
+    Set db = CurrentDb
+    
+    On Error Resume Next
+    
+    db.Properties("LastMaintenanceDate") = maintenanceDate
+    
+    If Err.Number = 3270 Then  ' Property not found
+        Err.Clear
+        Dim prop As DAO.Property
+        Set prop = db.CreateProperty("LastMaintenanceDate", dbDate, maintenanceDate)
+        db.Properties.Append prop
+    End If
+    
+    On Error GoTo 0
+    Set db = Nothing
+End Sub
 
 ''5️⃣ Testing & Verification Scripts
 
