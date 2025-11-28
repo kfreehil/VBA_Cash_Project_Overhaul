@@ -1,0 +1,481 @@
+'====================================================================================================
+'============BELOW CODE SITS WITHIN A VB SCRIPT OUTSIDE ACCESS DATABASE "BONYNostro.accdb"===========
+'====================================================================================================
+
+Option Explicit
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' GLOBAL VARIABLES
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+Dim g_LogFile       ' Log file path
+Dim g_fso           ' FileSystemObject (global for logging)
+Dim g_LogStream     ' Log file stream
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' 32/64 BIT CHECK
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+Dim ScriptHost
+ScriptHost = Mid(WScript.FullName, InStrRev(WScript.FullName, "\") + 1, Len(WScript.FullName))
+
+Dim oWs : Set oWs = CreateObject("WScript.Shell")
+Dim oProcEnv : Set oProcEnv = oWs.Environment("Process")
+
+If InStr(LCase(WScript.FullName), LCase(oProcEnv("windir") & "\System32\")) And oProcEnv("PROCESSOR_ARCHITECTURE") = "AMD64" Then
+    If Not WScript.Arguments.Count = 0 Then
+        Dim sArg, Arg
+        sArg = ""
+        For Each Arg In Wscript.Arguments
+            sArg = sArg & " " & """" & Arg & """"
+        Next
+    End If
+    Dim sCmd : sCmd = """" & oProcEnv("windir") & "\SysWOW64\" & ScriptHost & """" & " """ & WScript.ScriptFullName & """" & sArg
+    oWs.Run sCmd
+    WScript.Quit
+End If
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' MAIN SCRIPT
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+Dim StartTime
+Dim Elapsed
+
+StartTime = Timer
+
+Dim DATA_DIR_WOODSON
+DATA_DIR_WOODSON = "C:\Users\kfreehil\MyData\"
+Const DB_BONY = "BONYNostro.accdb"
+Const DB_MANAGER = "Manager.accdb"
+
+Dim dbPath
+dbPath = DATA_DIR_WOODSON & DB_BONY
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' INITIALIZE LOGGING
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+Set g_fso = CreateObject("Scripting.FileSystemObject")
+g_LogFile = DATA_DIR_WOODSON & "BONYUploadLog.txt"
+
+' Open log file for appending (8 = ForAppending, True = Create if not exists)
+Set g_LogStream = g_fso.OpenTextFile(g_LogFile, 8, True)
+
+WriteLog "═══════════════════════════════════════════════════════════════════════════"
+WriteLog "BONY UPLOAD SCRIPT STARTED"
+WriteLog "═══════════════════════════════════════════════════════════════════════════"
+WriteLog ""
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' VALIDATE DATABASE PATH
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+WriteLog "Checking database path..."
+WriteLog "  Path: " & dbPath
+
+If Not g_fso.FileExists(dbPath) Then
+    WriteLog "  [FATAL ERROR] Database not found!"
+    WriteLog "  Please check the path and try again."
+    CloseLog
+    MsgBox "FATAL ERROR: Database not found at " & dbPath, 16, "BONY Upload Error"
+    WScript.Quit 1
+End If
+
+WriteLog "  [OK] Database found"
+WriteLog ""
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' DAILY MAINTENANCE (runs ONCE per day, BEFORE opening database)
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+If IsDailyMaintenanceNeeded(DATA_DIR_WOODSON) Then
+    PerformDailyMaintenance dbPath, DATA_DIR_WOODSON
+Else
+    WriteLog "Daily maintenance already completed today - skipping"
+    WriteLog ""
+End If
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' NORMAL DATA INGESTION
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+WriteLog "Opening Access database for data ingestion..."
+
+Dim AccessDB
+Set AccessDB = CreateObject("Access.Application")
+
+On Error Resume Next
+AccessDB.OpenCurrentDatabase dbPath
+
+If Err.Number <> 0 Then
+    WriteLog "  [ERROR] Failed to open database: " & Err.Description
+    CloseLog
+    MsgBox "ERROR: Failed to open database - " & Err.Description, 16, "BONY Upload Error"
+    WScript.Quit 1
+End If
+On Error GoTo 0
+
+WriteLog "  [OK] Database opened"
+WriteLog "Running IngestNewData..."
+
+On Error Resume Next
+AccessDB.Run "IngestNewData", False
+
+If Err.Number <> 0 Then
+    WriteLog "  [ERROR] IngestNewData failed: " & Err.Description
+Else
+    WriteLog "  [OK] IngestNewData completed"
+End If
+On Error GoTo 0
+
+AccessDB.Quit
+Set AccessDB = Nothing
+
+WriteLog ""
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' MANAGER DATABASE UPDATE
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+WriteLog "Opening Manager database..."
+
+Dim AccessDB2
+Set AccessDB2 = CreateObject("Access.Application")
+
+On Error Resume Next
+AccessDB2.OpenCurrentDatabase DATA_DIR_WOODSON & DB_MANAGER
+
+If Err.Number <> 0 Then
+    WriteLog "  [ERROR] Failed to open Manager database: " & Err.Description
+Else
+    WriteLog "  [OK] Manager database opened"
+    WriteLog "Running ConfirmtBony..."
+    
+    AccessDB2.Run "ConfirmtBony"
+    
+    If Err.Number <> 0 Then
+        WriteLog "  [ERROR] ConfirmtBony failed: " & Err.Description
+    Else
+        WriteLog "  [OK] ConfirmtBony completed"
+    End If
+End If
+On Error GoTo 0
+
+AccessDB2.Quit
+Set AccessDB2 = Nothing
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' COMPLETE
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+Elapsed = Timer - StartTime
+
+WriteLog ""
+WriteLog "═══════════════════════════════════════════════════════════════════════════"
+WriteLog "BONY UPLOAD SCRIPT COMPLETED"
+WriteLog "Total time: " & PrintHrMinSec(Elapsed)
+WriteLog "═══════════════════════════════════════════════════════════════════════════"
+WriteLog ""
+WriteLog ""
+
+CloseLog
+
+MsgBox "BONY Data has been loaded via Outlook!" & vbCrLf & vbCrLf & _
+       "Timer: " & PrintHrMinSec(Elapsed) & vbCrLf & _
+       "Log: " & g_LogFile, 64, "BONY Upload Complete"
+
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' LOGGING FUNCTIONS
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+'**********************
+'*** WRITE TO LOG FILE ***
+'**********************
+Sub WriteLog(message)
+    Dim timestamp
+    timestamp = FormatDateTime(Now, vbShortDate) & " " & FormatDateTime(Now, vbLongTime)
+    
+    ' Write to log file with timestamp
+    g_LogStream.WriteLine timestamp & " | " & message
+End Sub
+
+'**********************
+'*** CLOSE LOG FILE ***
+'**********************
+Sub CloseLog()
+    On Error Resume Next
+    g_LogStream.Close
+    Set g_LogStream = Nothing
+    On Error GoTo 0
+End Sub
+
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' MAINTENANCE FUNCTIONS
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+'**********************
+'*** CHECK IF MAINTENANCE NEEDED ***
+'**********************
+Function IsDailyMaintenanceNeeded(dataDir)
+    Dim trackingFile
+    trackingFile = dataDir & "LastMaintenanceDate.txt"
+    
+    ' File doesn't exist - maintenance needed
+    If Not g_fso.FileExists(trackingFile) Then
+        IsDailyMaintenanceNeeded = True
+        Exit Function
+    End If
+    
+    ' Read last maintenance date
+    Dim ts, lastDateStr
+    Set ts = g_fso.OpenTextFile(trackingFile, 1) ' 1 = ForReading
+    lastDateStr = Trim(ts.ReadLine)
+    ts.Close
+    
+    ' Compare to today
+    Dim lastDate
+    lastDate = CDate(lastDateStr)
+    
+    If DateValue(lastDate) < DateValue(Now) Then
+        IsDailyMaintenanceNeeded = True
+    Else
+        IsDailyMaintenanceNeeded = False
+    End If
+End Function
+
+'**********************
+'*** PERFORM DAILY MAINTENANCE ***
+'**********************
+Sub PerformDailyMaintenance(dbPath, dataDir)
+    WriteLog "==========================================="
+    WriteLog "       DAILY MAINTENANCE"
+    WriteLog "==========================================="
+    WriteLog ""
+    
+    Dim maintenanceStart
+    maintenanceStart = Timer
+    
+    '───────────────────────────────────────────
+    ' STEP 1: Compact Database (while CLOSED)
+    '───────────────────────────────────────────
+    WriteLog "Step 1: Compacting database..."
+    WriteLog "  Database: " & dbPath
+    
+    Dim tempPath, backupPath
+    tempPath = Replace(dbPath, ".accdb", "_temp.accdb")
+    backupPath = Replace(dbPath, ".accdb", "_backup.accdb")
+    
+    ' Get size before
+    Dim dbFile, sizeBefore
+    Set dbFile = g_fso.GetFile(dbPath)
+    sizeBefore = dbFile.Size
+    Set dbFile = Nothing
+    
+    WriteLog "  Size before: " & FormatNumber(sizeBefore / 1024 / 1024, 1) & " MB"
+    
+    ' Compact using DAO
+    Dim engine
+    Set engine = CreateObject("DAO.DBEngine.120")
+    
+    On Error Resume Next
+    
+    ' Delete temp file if exists
+    If g_fso.FileExists(tempPath) Then g_fso.DeleteFile tempPath, True
+    
+    ' Compact to temp file
+    engine.CompactDatabase dbPath, tempPath
+    
+    If Err.Number = 0 Then
+        ' Success - swap files
+        If g_fso.FileExists(backupPath) Then g_fso.DeleteFile backupPath, True
+        g_fso.MoveFile dbPath, backupPath
+        g_fso.MoveFile tempPath, dbPath
+        
+        Dim sizeAfter
+        Set dbFile = g_fso.GetFile(dbPath)
+        sizeAfter = dbFile.Size
+        Set dbFile = Nothing
+        
+        WriteLog "  Size after: " & FormatNumber(sizeAfter / 1024 / 1024, 1) & " MB"
+        WriteLog "  Saved: " & FormatNumber((sizeBefore - sizeAfter) / 1024 / 1024, 1) & " MB"
+        WriteLog "  Backup: " & backupPath
+        WriteLog "  [OK] Compact complete!"
+    Else
+        WriteLog "  [ERROR] Compact failed: " & Err.Description
+        WriteLog "  [ERROR] Error number: " & Err.Number
+        Err.Clear
+        If g_fso.FileExists(tempPath) Then g_fso.DeleteFile tempPath, True
+    End If
+    
+    On Error GoTo 0
+    Set engine = Nothing
+    WriteLog ""
+    
+    '───────────────────────────────────────────
+    ' STEP 2: Refresh Index
+    '───────────────────────────────────────────
+    WriteLog "Step 2: Refreshing ValueDate index..."
+    
+    Dim indexStart
+    indexStart = Timer
+    
+    Dim accessApp
+    Set accessApp = CreateObject("Access.Application")
+    accessApp.OpenCurrentDatabase dbPath
+    
+    On Error Resume Next
+    accessApp.CurrentDb.Execute "DROP INDEX idx_valuedate ON BonyStatement"
+    Err.Clear
+    On Error GoTo 0
+    
+    accessApp.CurrentDb.Execute "CREATE INDEX idx_valuedate ON BonyStatement(ValueDate)"
+    
+    accessApp.Quit
+    Set accessApp = Nothing
+    
+    WriteLog "  Index refreshed in " & FormatNumber(Timer - indexStart, 2) & " seconds"
+    WriteLog "  [OK] Index complete!"
+    WriteLog ""
+    
+    '───────────────────────────────────────────
+    ' STEP 3: Record completion date
+    '───────────────────────────────────────────
+    Dim trackingFile
+    trackingFile = dataDir & "LastMaintenanceDate.txt"
+    
+    Dim ts
+    Set ts = g_fso.CreateTextFile(trackingFile, True)
+    ts.WriteLine FormatDateTime(Now, vbShortDate)
+    ts.Close
+    
+    WriteLog "==========================================="
+    WriteLog "[OK] Daily maintenance complete!"
+    WriteLog "  Total time: " & FormatNumber(Timer - maintenanceStart, 1) & " seconds"
+    WriteLog "==========================================="
+    WriteLog ""
+End Sub
+
+'**********************
+'*** FORMAT TIME AS HH:MM:SS ***
+'**********************
+Function PrintHrMinSec(elap)
+    Dim hr, min, sec, remainder
+    
+    elap = Int(elap)
+    
+    hr = elap \ 3600
+    remainder = elap - hr * 3600
+    min = remainder \ 60
+    remainder = remainder - min * 60
+    sec = remainder
+    
+    If Len(sec) = 1 Then sec = "0" & sec
+    If Len(min) = 1 Then min = "0" & min
+    
+    If hr = 0 Then
+        PrintHrMinSec = min & ":" & sec
+    Else
+        PrintHrMinSec = hr & ":" & min & ":" & sec
+    End If
+End Function
+```
+
+---
+
+## 📋 **Example Log Output (BONYUploadLog.txt)**
+```
+01/15/2025 8:00:05 AM | ═══════════════════════════════════════════════════════════════════════════
+01/15/2025 8:00:05 AM | BONY UPLOAD SCRIPT STARTED
+01/15/2025 8:00:05 AM | ═══════════════════════════════════════════════════════════════════════════
+01/15/2025 8:00:05 AM | 
+01/15/2025 8:00:05 AM | Checking database path...
+01/15/2025 8:00:05 AM |   Path: C:\Users\kfreehil\MyData\BONYNostro.accdb
+01/15/2025 8:00:05 AM |   [OK] Database found
+01/15/2025 8:00:05 AM | 
+01/15/2025 8:00:05 AM | ===========================================
+01/15/2025 8:00:05 AM |        DAILY MAINTENANCE
+01/15/2025 8:00:05 AM | ===========================================
+01/15/2025 8:00:05 AM | 
+01/15/2025 8:00:05 AM | Step 1: Compacting database...
+01/15/2025 8:00:05 AM |   Database: C:\Users\kfreehil\MyData\BONYNostro.accdb
+01/15/2025 8:00:05 AM |   Size before: 1,127.5 MB
+01/15/2025 8:02:10 AM |   Size after: 923.2 MB
+01/15/2025 8:02:10 AM |   Saved: 204.3 MB
+01/15/2025 8:02:10 AM |   Backup: C:\Users\kfreehil\MyData\BONYNostro_backup.accdb
+01/15/2025 8:02:10 AM |   [OK] Compact complete!
+01/15/2025 8:02:10 AM | 
+01/15/2025 8:02:10 AM | Step 2: Refreshing ValueDate index...
+01/15/2025 8:02:13 AM |   Index refreshed in 2.97 seconds
+01/15/2025 8:02:13 AM |   [OK] Index complete!
+01/15/2025 8:02:13 AM | 
+01/15/2025 8:02:13 AM | ===========================================
+01/15/2025 8:02:13 AM | [OK] Daily maintenance complete!
+01/15/2025 8:02:13 AM |   Total time: 128.3 seconds
+01/15/2025 8:02:13 AM | ===========================================
+01/15/2025 8:02:13 AM | 
+01/15/2025 8:02:13 AM | Opening Access database for data ingestion...
+01/15/2025 8:02:15 AM |   [OK] Database opened
+01/15/2025 8:02:15 AM | Running IngestNewData...
+01/15/2025 8:02:20 AM |   [OK] IngestNewData completed
+01/15/2025 8:02:20 AM | 
+01/15/2025 8:02:20 AM | Opening Manager database...
+01/15/2025 8:02:21 AM |   [OK] Manager database opened
+01/15/2025 8:02:21 AM | Running ConfirmtBony...
+01/15/2025 8:02:22 AM |   [OK] ConfirmtBony completed
+01/15/2025 8:02:22 AM | 
+01/15/2025 8:02:22 AM | ═══════════════════════════════════════════════════════════════════════════
+01/15/2025 8:02:22 AM | BONY UPLOAD SCRIPT COMPLETED
+01/15/2025 8:02:22 AM | Total time: 02:17
+01/15/2025 8:02:22 AM | ═══════════════════════════════════════════════════════════════════════════
+01/15/2025 8:02:22 AM | 
+01/15/2025 8:02:22 AM | 
+```
+
+---
+
+## 📁 **File Location**
+```
+C:\Users\kfreehil\MyData\
+├─ BONYNostro.accdb
+├─ BONYNostro_backup.accdb
+├─ Manager.accdb
+├─ LastMaintenanceDate.txt
+├─ BONYUploadLog.txt          ← NEW LOG FILE
+└─ [your VBScript].vbs
+```
+
+---
+
+## 🔑 **Key Changes**
+```
+Added:
+├─ Global variables for logging (g_LogFile, g_fso, g_LogStream)
+├─ WriteLog() sub - writes timestamped messages to file
+├─ CloseLog() sub - properly closes log file
+└─ Log file opened in APPEND mode (keeps history)
+
+Changed:
+├─ All WScript.Echo → WriteLog
+├─ Added error handling with logging
+└─ Final MsgBox shows log file path
+
+Log features:
+├─ Timestamp on every line
+├─ Appends to existing file (keeps history)
+├─ Creates file if doesn't exist
+└─ Located in same directory as database
+```
+
+---
+
+## ✅ **Summary**
+```
+Log file: C:\Users\kfreehil\MyData\BONYUploadLog.txt
+
+Features:
+├─ Timestamped entries
+├─ Appends (keeps full history)
+├─ Tracks all operations
+├─ Records errors with details
+└─ Shows maintenance and upload status
+
+No more popups during execution!
+Only final completion message shown.
