@@ -1,3 +1,290 @@
+'====================================================================================================
+'============BELOW CODE SITS WITHIN A VB SCRIPT OUTSIDE ACCESS DATABASE "BONYNostro.accdb"===========
+'====================================================================================================
+
+'C:\Windows\System32\WScript.exe = WScript.exe
+Dim ScriptHost
+ScriptHost = Mid(WScript.FullName, InStrRev(WScript.FullName, "\") + 1, Len(WScript.FullName))
+
+Dim oWs : Set oWs = CreateObject("WScript.Shell")
+Dim oProcEnv : Set oProcEnv = oWs.Environment("Process")
+
+' Am I running 64-bit version of WScript.exe/Cscript.exe? So, call #cript again in x86 script host and then exit.
+If InStr(LCase(WScript.FullName), LCase(oProcEnv("windir") & "\System32\")) And oProcEnv("PROCESSOR_ARCHITECTURE") = "AMD64" Then
+    'rebuild arguments
+    If Not WScript.Arguments.Count = 0 Then
+        Dim sArg, Arg
+        sArg = ""
+        For Each Arg In Wscript.Arguments
+            'msgbox Arg,64
+            sArg = sArg & " " & """" & Arg & """"
+        Next
+    End If
+
+    ' rewriting command
+    Dim sCmd : sCmd = """" & oProcEnv("windir") & "\SysWOW64\" & ScriptHost & """" & " """ & WScript.ScriptFullName & """" & sArg
+    
+    'msgbox "Call " & sCmd, 64
+    'WScript.Echo "Call " & sCmd
+    oWs.Run sCmd
+    WScript.Quit
+End If
+
+'"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+'"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+Dim StartTime
+Dim Elapsed
+
+StartTime = Timer
+
+Dim DATA_DIR_WOODSON
+'DATA_DIR_WOODSON = "\\pc.internal.macquarie.com\FSVC\AMERICAS\wnycfsp28535\" & _
+'                    "Shared\tnc\SCF\Commodity Margin Lending\CML Start-up\" & _
+'                    "Middle Office Procedures\Woodson\VBA Examples\data\"
+
+DATA_DIR_WOODSON = "C:\Users\kfreehil\MyData\"
+Const DB_BONY = "BONYNostro.accdb"
+
+Dim AccessDB
+Set AccessDB = CreateObject("Access.Application")
+With AccessDB
+    .OpenCurrentDatabase DATA_DIR_WOODSON & DB_BONY
+    .Run "IngestNewData", False
+    .Quit
+End With
+Set AccessDB = Nothing
+
+Dim AccessDB2
+Set AccessDB2 = CreateObject("Access.Application")
+Const DB_MANAGER = "Manager.accdb"
+With AccessDB2
+    .OpenCurrentDatabase DATA_DIR_WOODSON & DB_MANAGER
+    .Run "ConfirmtBony"
+    .Quit
+End With
+Set AccessDB2 = Nothing
+
+'Dim ProgramPath, WshShell, ProgramArgs, WaitOnReturn,intWindowStyle
+'Set WshShell=CreateObject ("WScript.Shell")
+'ProgramPath="C:\Users\kfreehil\MyData\ConfirmBONYSettlements.vbs"
+'ProgramArgs=""
+'intWindowStyle=1
+'WaitOnReturn=True
+'WshShell.Run Chr (34) & ProgramPath & Chr (34) & Space (1) & ProgramArgs,intWindowStyle, WaitOnReturn
+'Set wshShell = Nothing
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' DAILY MAINTENANCE (runs ONCE per day, BEFORE opening database)
+' Compact happens while database is CLOSED - no permission errors!
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+If IsDailyMaintenanceNeeded(DATA_DIR_WOODSON) Then
+    PerformDailyMaintenance dbPath, DATA_DIR_WOODSON
+End If
+
+Elapsed = Timer - StartTime
+
+msgbox "BONY Data has been loaded via Outlook! Timer: " & PrintHrMinSec(Elapsed),64
+
+
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+' MAINTENANCE FUNCTIONS
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+'═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+'**********************
+'*** CHECK IF MAINTENANCE NEEDED ***
+'**********************
+Function IsDailyMaintenanceNeeded(dataDir)
+    ' Check if maintenance has run today by reading a tracking file
+    
+    Dim fso
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    
+    Dim trackingFile
+    trackingFile = dataDir & "LastMaintenanceDate.txt"
+    
+    ' File doesn't exist - maintenance needed
+    If Not fso.FileExists(trackingFile) Then
+        IsDailyMaintenanceNeeded = True
+        Set fso = Nothing
+        Exit Function
+    End If
+    
+    ' Read last maintenance date
+    Dim ts, lastDateStr
+    Set ts = fso.OpenTextFile(trackingFile, 1) ' 1 = ForReading
+    lastDateStr = Trim(ts.ReadLine)
+    ts.Close
+    
+    ' Compare to today (date only, not time)
+    Dim lastDate
+    lastDate = CDate(lastDateStr)
+    
+    If DateValue(lastDate) < DateValue(Now) Then
+        IsDailyMaintenanceNeeded = True
+    Else
+        IsDailyMaintenanceNeeded = False
+    End If
+    
+    Set fso = Nothing
+End Function
+
+'**********************
+'*** PERFORM DAILY MAINTENANCE ***
+'**********************
+Sub PerformDailyMaintenance(dbPath, dataDir)
+    WScript.Echo "==========================================="
+    WScript.Echo "       DAILY MAINTENANCE"
+    WScript.Echo "==========================================="
+    WScript.Echo ""
+    
+    Dim fso
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    
+    Dim maintenanceStart
+    maintenanceStart = Timer
+    
+    '───────────────────────────────────────────
+    ' STEP 1: Compact Database (while CLOSED)
+    '───────────────────────────────────────────
+    WScript.Echo "Step 1: Compacting database..."
+    
+    Dim tempPath, backupPath
+    tempPath = Replace(dbPath, ".accdb", "_temp.accdb")
+    backupPath = Replace(dbPath, ".accdb", "_backup.accdb")
+    
+    ' Get size before
+    Dim sizeBefore
+    sizeBefore = fso.GetFile(dbPath).Size
+    WScript.Echo "  Size before: " & FormatNumber(sizeBefore / 1024 / 1024, 1) & " MB"
+    
+    ' Compact using DAO (database must be CLOSED)
+    Dim engine
+    Set engine = CreateObject("DAO.DBEngine.120")
+    
+    Dim compactSuccess
+    compactSuccess = False
+    
+    On Error Resume Next
+    
+    ' Delete temp file if exists from previous failed attempt
+    If fso.FileExists(tempPath) Then fso.DeleteFile tempPath
+    
+    ' Compact to temp file
+    engine.CompactDatabase dbPath, tempPath
+    
+    If Err.Number = 0 Then
+        ' Success - swap files
+        If fso.FileExists(backupPath) Then fso.DeleteFile backupPath
+        fso.MoveFile dbPath, backupPath
+        fso.MoveFile tempPath, dbPath
+        
+        Dim sizeAfter
+        sizeAfter = fso.GetFile(dbPath).Size
+        WScript.Echo "  Size after: " & FormatNumber(sizeAfter / 1024 / 1024, 1) & " MB"
+        WScript.Echo "  Saved: " & FormatNumber((sizeBefore - sizeAfter) / 1024 / 1024, 1) & " MB"
+        WScript.Echo "  Backup: " & backupPath
+        WScript.Echo "  [OK] Compact complete!"
+        compactSuccess = True
+    Else
+        WScript.Echo "  [ERROR] Compact failed: " & Err.Description
+        Err.Clear
+        ' Clean up temp file if exists
+        If fso.FileExists(tempPath) Then fso.DeleteFile tempPath
+    End If
+    
+    On Error GoTo 0
+    Set engine = Nothing
+    WScript.Echo ""
+    
+    '───────────────────────────────────────────
+    ' STEP 2: Refresh Index (requires opening database briefly)
+    '───────────────────────────────────────────
+    WScript.Echo "Step 2: Refreshing ValueDate index..."
+    
+    Dim indexStart
+    indexStart = Timer
+    
+    Dim accessApp
+    Set accessApp = CreateObject("Access.Application")
+    accessApp.OpenCurrentDatabase dbPath
+    
+    ' Drop existing index (ignore error if doesn't exist)
+    On Error Resume Next
+    accessApp.CurrentDb.Execute "DROP INDEX idx_valuedate ON BonyStatement"
+    Err.Clear
+    On Error GoTo 0
+    
+    ' Create fresh index
+    accessApp.CurrentDb.Execute "CREATE INDEX idx_valuedate ON BonyStatement(ValueDate)"
+    
+    ' Close Access
+    accessApp.Quit
+    Set accessApp = Nothing
+    
+    WScript.Echo "  Index refreshed in " & FormatNumber(Timer - indexStart, 2) & " seconds"
+    WScript.Echo "  [OK] Index complete!"
+    WScript.Echo ""
+    
+    '───────────────────────────────────────────
+    ' STEP 3: Record completion date
+    '───────────────────────────────────────────
+    Dim trackingFile
+    trackingFile = dataDir & "LastMaintenanceDate.txt"
+    
+    Dim ts
+    Set ts = fso.CreateTextFile(trackingFile, True) ' True = Overwrite
+    ts.WriteLine FormatDateTime(Now, vbShortDate)
+    ts.Close
+    
+    WScript.Echo "==========================================="
+    WScript.Echo "[OK] Daily maintenance complete!"
+    WScript.Echo "  Total time: " & FormatNumber(Timer - maintenanceStart, 1) & " seconds"
+    WScript.Echo "==========================================="
+    WScript.Echo ""
+    
+    Set fso = Nothing
+End Sub
+
+'************************
+'* This function calculates hours, minutes
+'* and seconds based on how many seconds
+'* are passed in and returns a nice format
+'************************
+Public Function PrintHrMinSec(elap)
+    Dim hr
+    Dim min
+    Dim sec
+    Dim remainder
+    
+    elap = Int(elap) 'Just use the INTeger portion of the variable
+    
+    'Using "\" returns just the integer portion of a quotient
+    hr = elap \ 3600 '1 hour = 3600 seconds
+    remainder = elap - hr * 3600
+    min = remainder \ 60
+    remainder = remainder - min * 60
+    sec = remainder
+    
+    'Prepend leading zeroes if necessary
+    If Len(sec) = 1 Then sec = "0" & sec
+    If Len(min) = 1 Then min = "0" & min
+    
+    'Only show the Hours field if it's non-zero
+    If hr = 0 Then
+        PrintHrMinSec = min & ":" & sec
+    Else
+        PrintHrMinSec = hr & ":" & min & ":" & sec
+    End If
+    
+End Function
+
+'====================================================================================================
+'============BELOW CODE SITS WITHIN IN ACCESS DATABASE "BONYNostro.accdb"============================
+'====================================================================================================
+
 '' Module: 0_DatabaseSetup (NEW - Run Once)
 
 ' ================================================
