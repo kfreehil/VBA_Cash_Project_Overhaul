@@ -385,40 +385,37 @@ Sub PerformDailyMaintenance(dbPath)
 	Dim indexStart
 	indexStart = Timer
 
-	Dim accessApp
-	Set accessApp = CreateObject("Access.Application")
-
-	' Keep Access hidden (prevents UI hangs)
-	accessApp.Visible = False
-
-	accessApp.OpenCurrentDatabase dbPath
-
-	' Get explicit reference to database
-	Dim db
-	Set db = accessApp.CurrentDb
+	Dim AccessDB
+	Set AccessDB = CreateObject("Access.Application")
 
 	On Error Resume Next
-	db.Execute "DROP INDEX idx_valuedate ON BonyStatement"
-	Err.Clear
+	AccessDB.OpenCurrentDatabase dbPath
+
+	If Err.Number <> 0 Then
+		WriteLog "  [ERROR] Failed to open database: " & Err.Description
+		CloseLog
+		MsgBox "ERROR: Failed to open database - " & Err.Description, 16, "BONY INDEX Recreate Error"
+		WScript.Quit 1
+	End If
 	On Error GoTo 0
 
-	db.Execute "CREATE INDEX idx_valuedate ON BonyStatement(ValueDate)"
+	WriteLog "  [OK] Database opened"
+	WriteLog "Running UpdateIndex.."
 
-	' Release database reference FIRST
-	Set db = Nothing
+	On Error Resume Next
+	AccessDB.Run "UpdateIndex", False
 
-	' Close database before quitting
-	accessApp.CloseCurrentDatabase
+	If Err.Number <> 0 Then
+		WriteLog "  [ERROR] UpdateIndex failed: " & Err.Description
+	Else
+		WriteLog "  [OK] UpdateIndex completed"
+	End If
+	On Error GoTo 0
 
-	' Small pause to let Access finish
-	WScript.Sleep 500
+	AccessDB.Quit
+	Set AccessDB = Nothing
 
-	' Now quit
-	accessApp.Quit
-
-	' Release Access reference
-	Set accessApp = Nothing
-    
+	WriteLog ""  
     WriteLog "  Index refreshed in " & FormatNumber(Timer - indexStart, 2) & " seconds"
     WriteLog "  [OK] Index complete!"
     WriteLog ""
