@@ -74,7 +74,7 @@ dbPath = g_DataDir & DB_BONY
 ' INITIALIZE LOGGING
 '═══════════════════════════════════════════════════════════════════════════════════════════════════
 Set g_fso = CreateObject("Scripting.FileSystemObject")
-g_LogFile = g_DataDir & "BONYUploadLog.txt"
+g_LogFile = g_DataDir & "Logs\BONYUploadLog.txt"
 
 ' Open log file for appending (8 = ForAppending, True = Create if not exists)
 Set g_LogStream = g_fso.OpenTextFile(g_LogFile, 8, True)
@@ -256,7 +256,7 @@ End Sub
 '**********************
 Function IsDailyMaintenanceNeeded()
     Dim trackingFile
-    trackingFile = g_DataDir & "LastMaintenanceDate.txt"
+    trackingFile = g_DataDir & "Logs\LastMaintenanceDate.txt"
     
     ' File doesn't exist - maintenance needed
     If Not g_fso.FileExists(trackingFile) Then
@@ -294,7 +294,7 @@ End Function
 '**********************
 Sub SetLastMaintenanceDate()
     Dim trackingFile
-    trackingFile = g_DataDir & "LastMaintenanceDate.txt"
+    trackingFile = g_DataDir & "Logs\LastMaintenanceDate.txt"
     
     Dim ts
     Set ts = g_fso.CreateTextFile(trackingFile, True) ' True = Overwrite
@@ -377,27 +377,47 @@ Sub PerformDailyMaintenance(dbPath)
     Set engine = Nothing
     WriteLog ""
     
-    '───────────────────────────────────────────
-    ' STEP 2: Refresh Index
-    '───────────────────────────────────────────
-    WriteLog "Step 2: Refreshing ValueDate index..."
-    
-    Dim indexStart
-    indexStart = Timer
-    
-    Dim accessApp
-    Set accessApp = CreateObject("Access.Application")
-    accessApp.OpenCurrentDatabase dbPath
-    
-    On Error Resume Next
-    accessApp.CurrentDb.Execute "DROP INDEX idx_valuedate ON BonyStatement"
-    Err.Clear
-    On Error GoTo 0
-    
-    accessApp.CurrentDb.Execute "CREATE INDEX idx_valuedate ON BonyStatement(ValueDate)"
-    
-    accessApp.Quit
-    Set accessApp = Nothing
+	'───────────────────────────────────────────
+	' STEP 2: Refresh Index
+	'───────────────────────────────────────────
+	WriteLog "Step 2: Refreshing ValueDate index..."
+
+	Dim indexStart
+	indexStart = Timer
+
+	Dim accessApp
+	Set accessApp = CreateObject("Access.Application")
+
+	' Keep Access hidden (prevents UI hangs)
+	accessApp.Visible = False
+
+	accessApp.OpenCurrentDatabase dbPath
+
+	' Get explicit reference to database
+	Dim db
+	Set db = accessApp.CurrentDb
+
+	On Error Resume Next
+	db.Execute "DROP INDEX idx_valuedate ON BonyStatement"
+	Err.Clear
+	On Error GoTo 0
+
+	db.Execute "CREATE INDEX idx_valuedate ON BonyStatement(ValueDate)"
+
+	' Release database reference FIRST
+	Set db = Nothing
+
+	' Close database before quitting
+	accessApp.CloseCurrentDatabase
+
+	' Small pause to let Access finish
+	WScript.Sleep 500
+
+	' Now quit
+	accessApp.Quit
+
+	' Release Access reference
+	Set accessApp = Nothing
     
     WriteLog "  Index refreshed in " & FormatNumber(Timer - indexStart, 2) & " seconds"
     WriteLog "  [OK] Index complete!"
